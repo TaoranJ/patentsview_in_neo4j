@@ -1,0 +1,10 @@
+certifi==2018.11.29
+mkl-random==1.0.2
+neo4j==1.7.1
+neobolt==1.7.4
+neotime==1.7.4
+numpy==1.15.4
+pandas==0.24.1
+python-dateutil==2.8.0
+pytz==2018.9
+six==1.12.0
