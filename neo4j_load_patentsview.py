@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""Load patent dataset into neo4j database."""
+"""Load PatentsView dataset into neo4j database."""
 
 import argparse
 
