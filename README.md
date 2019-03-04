@@ -40,11 +40,42 @@ Edges:
 
 ## Examples
 
-Find all citations received by a certain patent.
+### Find all citations received by a certain patent
 
-```bash
+```sql
 MATCH (p:patent)<-[:CITES]-(c:patent)
 WHERE p.pid = '6178752'
 RETURN p, c
 ```
 ![All citations received by a certain patent.](examples/ex1.png)
+
+### Find classfication information of a certain patent
+
+```sql
+MATCH (p:patent)-[:BELONGS_TO]->(c:cpc_group)
+WHERE p.pid = '6178752'
+RETURN p, c
+```
+
+![Classification information of a certain patent.](examples/ex2.png)
+
+### Find assignees of a certain patent
+
+```sql
+MATCH (p:patent)<-[:OWNS]-(a:assignee)
+WHERE p.pid = '6178752'
+RETURN p, a
+```
+
+![Assignees of a certain patent.](examples/ex3.png)
+
+
+### Find locations of the assignee of a certain patent
+
+```sql
+MATCH (p:patent)<-[:OWNS]-(a:assignee)-[:LOCATES_AT]->(l:location)
+WHERE p.pid = '6178752'
+RETURN p, a, l
+```
+
+![Locations of assigness of a certain patent.](examples/ex4.png)
