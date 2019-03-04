@@ -37,3 +37,14 @@ Edges:
 - `INVENTS`
 - `BELONGS_TO`
 - `LOCATES_AT`
+
+## Examples
+
+Find all citations received by a certain patent.
+
+```bash
+MATCH (p:patent)<-[:CITES]-(c:patent)
+WHERE p.pid = '6178752'
+RETURN p, c
+```
+![All citations received by a certain patent.](examples/ex1.png)
