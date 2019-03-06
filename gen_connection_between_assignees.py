@@ -26,7 +26,7 @@ def visualization_format(aca, opath, max_size=35, min_size=5):
     edges = list(set([tuple(sorted(e)) for e in aca]))
     res = {'nodes': {}, 'edges': edges}
     citation_received = Counter([e[0] for e in aca])
-    unit = math.log(citation_received.most_common(1)[0][1], 2) /\
+    unit = math.log(citation_received.most_common(1)[0][1] + 1, 2) /\
         (max_size - min_size)
     for node in nodes:
         res['nodes'][node] = {

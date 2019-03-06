@@ -968,17 +968,11 @@ class Neo4jHandler(object):
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        aca = []
         with graph.session() as session:
-            tx = session.begin_transaction()
-            for pid in pids:
-                statement = ('MATCH (a1:assignee)-[:OWNS]->(p1:patent)'
-                             '<-[:CITES]-(p2:patent)<-[:OWNS]-(a2:assignee)'
-                             '-[:OWNS]->(p3:patent)'
-                             'WHERE p1.pid IN $pids AND p3.pid IN $pids '
-                             'RETURN a1.assignee_name, a2.assignee_name')
-                result = tx.run(statement, pids=list(pids)).values()
-                if result:
-                    aca += result
-            tx.commit()
+            statement = ('MATCH (a1:assignee)-[:OWNS]->(p1:patent)'
+                         '<-[:CITES]-(p2:patent)<-[:OWNS]-(a2:assignee)'
+                         '-[:OWNS]->(p3:patent)'
+                         'WHERE p1.pid IN $pids AND p3.pid IN $pids '
+                         'RETURN a1.assignee_name, a2.assignee_name')
+            aca = session.run(statement, pids=list(pids)).values()
         return aca
