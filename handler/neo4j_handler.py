@@ -10,7 +10,21 @@ from .patentsview_handler import PatentsViewHandler
 
 
 def to_epoch(date):
-    return (date - datetime(1970, 1, 1)) / datetime.timedelta(days=1)
+    return (date - datetime.datetime(1970, 1, 1)) / datetime.timedelta(days=1)
+
+
+def neodate2datetime(patent):
+    """Convert patent date to datetime."""
+    patent['date'] = _neodate2datetime(patent['date'])
+    if 'application_date' in patent:
+        patent['application_date'] = \
+                _neodate2datetime(patent['application_date'])
+    return patent
+
+
+def _neodate2datetime(neodate):
+    """Convert a NeoTime to datetime."""
+    return datetime.datetime(neodate.year, neodate.month, neodate.day)
 
 
 class Neo4jHandler(object):
@@ -720,7 +734,7 @@ class Neo4jHandler(object):
               '(c:nber_subcategory {id: $id}) MERGE (p)-[:BELONGS_TO]->(c)')
         tx.run(st, pid=str(rel['patent_id']), id=str(rel['nber_subcategory']))
 
-    def query_patents_by_time_window(self, tw, min_num=5):
+    def query_patents_by_time_window(self, tw, min_num, max_num):
         """Query patents by time window.
 
         Parameters
@@ -730,6 +744,8 @@ class Neo4jHandler(object):
             '1976-12-31').
         min_num : int
             Patents which recived less than min_num citations are dropped.
+        max_num : int
+            Patents which recived more than max_num citations are dropped.
 
         Returns
         -------
@@ -742,15 +758,16 @@ class Neo4jHandler(object):
                                      auth=(self._username, self._password))
         start, end = tw
         with graph.session() as session:
-            statement = ('MATCH (p:Patent)<-[:CITE]-(cites:Patent) '
-                         'WHERE p.date >= date($s) and p.date <= date($e) '
-                         'WITH p, count(distinct cites) AS num_cites '
-                         'WHERE num_cites > $num '
-                         'RETURN p.pid ORDER BY p.date DESC')
-            result = session.run(statement, s=start, e=end, num=min_num)
+            st = ('MATCH (p:patent)<-[:CITES]-(c:patent) '
+                  'WHERE p.date >= date($s) and p.date <= date($e) '
+                  'WITH p, count(distinct c) AS num_cites '
+                  'WHERE num_cites > $min_num AND num_cites < $max_num '
+                  'RETURN p.pid ORDER BY p.date DESC')
+            result = session.run(st, s=start, e=end, min_num=min_num,
+                                 max_num=max_num)
             return [e[0] for e in result.values()]
 
-    def query_citation_chain(self, pids):
+    def query_patent_citation_chain(self, pids, chunks=500):
         """Query the citation chain for a given pid.
 
         Parameters
@@ -769,71 +786,63 @@ class Neo4jHandler(object):
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        pid_chunks = np.array_split(pids, 50)
+        pchunks = np.array_split(list(pids), chunks)
         with graph.session() as session:
-            for ix, pid_chunk in enumerate(pid_chunks):
+            for ix, chunk in enumerate(pchunks, start=1):
+                print('Patent citation chain generation [BATCH '
+                      '{:04d}/{:04d}]'.format(ix, chunks))
                 chains = []
                 tx = session.begin_transaction()
-                for pid in pid_chunk:
-                    statement = ('MATCH (p:Patent)<-[:CITE]-(cites:Patent) '
+                for pid in chunk:
+                    statement = ('MATCH (p:patent)<-[:CITES]-(c:patent) '
                                  'WHERE p.pid = $pid '
-                                 'RETURN p, cites ORDER BY cites.date ASC')
+                                 'RETURN p, c ORDER BY c.date ASC')
                     result = tx.run(statement, pid=pid).values()
-                    patent = dict(result[0][0])  # target patent
-                    patent['date'] = datetime(
-                            patent['date'].year, patent['date'].month,
-                            patent['date'].day)
-                    if 'application_date' in patent:
-                        patent['application_date'] = datetime(
-                                patent['application_date'].year,
-                                patent['application_date'].month,
-                                patent['application_date'].day)
-                    chain = [patent]
-                    for pair in result:
-                        patent = dict(pair[1])
-                        patent['date'] = datetime(
-                                patent['date'].year, patent['date'].month,
-                                patent['date'].day)
-                        if 'application_date' in patent:
-                            patent['application_date'] = datetime(
-                                    patent['application_date'].year,
-                                    patent['application_date'].month,
-                                    patent['application_date'].day)
-                        chain.append(patent)
+                    chain = [neodate2datetime(dict(result[0][0]))] + \
+                        [neodate2datetime(dict(pair[1])) for pair in result]
                     chains.append(chain)
                 tx.commit()
-                print('{}/{}'.format(ix + 1, len(pid_chunks)))
                 yield ix, chains
 
-    def query_assignee_by_pid(self, pids):
-        """Get assignees associated with the patents of interest.
+    def query_assignee_by_pid(self, pids, chunks=100):
+        """Given a set of patents of interest, this function returns their
+        associated assignees.
 
         Parameters
         ----------
         pids : list
             Patents of interest.
 
+        Returns
+        -------
+        assignees : set
+            Set of target assignees.
+
         """
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        pid_chunks = np.array_split(pids, 50)
+        pchunks = np.array_split(list(pids), chunks)
+        assignees = set()
         with graph.session() as session:
-            for ix, pid_chunk in enumerate(pid_chunks):
-                assignee_ids = set()
+            for ix, chunk in enumerate(pchunks, start=1):
+                print('Retrieving target assignees [BATCH '
+                      '{:03d}/{:03d}]'.format(ix, chunks))
                 tx = session.begin_transaction()
-                for pid in pid_chunk:
-                    statement = ('MATCH (p:Patent)<-[:OWN]-(a:Assignee) '
+                for pid in chunk:
+                    statement = ('MATCH (p:patent)<-[:OWNS]-(a:assignee) '
                                  'WHERE p.pid = $pid '
                                  'RETURN a.assignee_id')
                     result = tx.run(statement, pid=pid).values()
-                    assignee_ids |= set(np.array(result).flatten().tolist())
+                    assignees |= set(np.array(result).flatten().tolist())
                 tx.commit()
-                print('{}/{}'.format(ix + 1, len(pid_chunks)))
-                yield assignee_ids
+        return assignees
 
-    def query_citation_chain_of_assignee(self, aids):
+    def query_citation_chain_of_assignee(self, aids, chunks=100):
         """Query the citation chain for a given assignee.
+
+        Currently, only id and timestampe of patent who cites this assignee is
+        attached. In the future, maybe more information is required.
 
         Parameters
         ----------
@@ -851,89 +860,65 @@ class Neo4jHandler(object):
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        aid_chunks = np.array_split(aids, 200)
+        achunks = np.array_split(list(aids), chunks)
         with graph.session() as session:
-            for ix, aid_chunk in enumerate(aid_chunks):
-                print('Working on assignee chunks {:03d}/{:03d}'.format(
-                    ix + 1, 200))
+            for ix, chunk in enumerate(achunks, start=1):
+                print('Retrieving assignee citation chain [BATCH '
+                      '{:03d}/{:03d}]'.format(ix, chunks))
                 chains = {}
                 tx = session.begin_transaction()
-                for aid in aid_chunk:
-                    statement = ('MATCH (cites:Patent)-[:CITE]->(p:Patent)'
-                                 '<-[:OWN]-(a:Assignee) '
+                for aid in chunk:
+                    statement = ('MATCH (cites:patent)-[:CITES]->(p:patent)'
+                                 '<-[:OWNS]-(a:assignee) '
                                  'WHERE a.assignee_id = $aid '
                                  'WITH DISTINCT cites '
                                  'RETURN cites.pid, cites.date '
                                  'ORDER BY cites.date ASC')
                     result = tx.run(statement, aid=aid).values()
-                    chain = []  # generate citation chain for each aid
-                    for patent in result:
-                        pid, date = patent
-                        date = datetime(date.year, date.month, date.day)
-                        chain.append((pid, to_epoch(date)))
-                    chains[aid] = chain
+                    chains[aid] = [(pid, to_epoch(_neodate2datetime(date)))
+                                   for pid, date in result]
                 tx.commit()
-                print('Finish working on {}/{}'.format(ix + 1, 200))
                 yield ix, chains
 
-    def query_pid2aid(self, pids):
-        """Get assignees associated with the patents of interest.
+    def query_inventor_by_pid(self, pids, chunks=100):
+        """Given a set of patents of interest, this function returns their
+        associated inventors.
 
         Parameters
         ----------
         pids : list
             Patents of interest.
 
-        """
-
-        graph = GraphDatabase.driver('bolt://localhost:7687',
-                                     auth=(self._username, self._password))
-        pid_chunks = np.array_split(pids, 50)
-        with graph.session() as session:
-            for ix, pid_chunk in enumerate(pid_chunks):
-                tx = session.begin_transaction()
-                pairs_chunk = {}
-                for pid in pid_chunk:
-                    statement = ('MATCH (p:Patent)<-[:OWN]-(a:Assignee) '
-                                 'WHERE p.pid = $pid '
-                                 'RETURN a.assignee_id')
-                    result = tx.run(statement, pid=pid).values()
-                    matched_assignees = np.array(result).flatten().tolist()
-                    if matched_assignees:
-                        pairs_chunk[pid] = matched_assignees
-                tx.commit()
-                print('{}/{}'.format(ix + 1, len(pid_chunks)))
-                yield pairs_chunk
-
-    def query_inventor_by_pid(self, pids):
-        """Get inventors associated with the patents of interest.
-
-        Parameters
-        ----------
-        pids : list
-            Patents of interest.
+        Returns
+        -------
+        inventors : set
+            Set of target inventors.
 
         """
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        pid_chunks = np.array_split(pids, 50)
+        pchunks = np.array_split(list(pids), chunks)
+        inventors = set()
         with graph.session() as session:
-            for ix, pid_chunk in enumerate(pid_chunks):
-                inventor_ids = set()
+            for ix, chunk in enumerate(pchunks, start=1):
+                print('Retrieving target inventors [BATCH '
+                      '{:03d}/{:03d}]'.format(ix, chunks))
                 tx = session.begin_transaction()
-                for pid in pid_chunk:
-                    statement = ('MATCH (p:Patent)<-[:INVENT]-(i:Inventor) '
+                for pid in chunk:
+                    statement = ('MATCH (p:patent)<-[:INVENTS]-(i:inventor) '
                                  'WHERE p.pid = $pid '
                                  'RETURN i.inventor_id')
                     result = tx.run(statement, pid=pid).values()
-                    inventor_ids |= set(np.array(result).flatten().tolist())
+                    inventors |= set(np.array(result).flatten().tolist())
                 tx.commit()
-                print('{}/{}'.format(ix + 1, len(pid_chunks)))
-                yield inventor_ids
+        return inventors
 
-    def query_citation_chain_of_inventor(self, iids):
+    def query_citation_chain_of_inventor(self, iids, chunks=100):
         """Query the citation chain for a given inventor.
+
+        Currently, only id and timestampe of patent who cites this inventor is
+        attached. In the future, maybe more information is required.
 
         Parameters
         ----------
@@ -951,61 +936,27 @@ class Neo4jHandler(object):
 
         graph = GraphDatabase.driver('bolt://localhost:7687',
                                      auth=(self._username, self._password))
-        iid_chunks = np.array_split(iids, 200)
+        ichunks = np.array_split(list(iids), chunks)
         with graph.session() as session:
-            for ix, iid_chunk in enumerate(iid_chunks):
-                print('Working on inventor chunks {:03d}/{:03d}'.format(
-                    ix + 1, 200))
+            for ix, chunk in enumerate(ichunks, start=1):
+                print('Retrieving inventor citation chain [BATCH '
+                      '{:03d}/{:03d}]'.format(ix, chunks))
                 chains = {}
                 tx = session.begin_transaction()
-                for iid in iid_chunk:
-                    statement = ('MATCH (cites:Patent)-[:CITE]->(p:Patent)'
-                                 '<-[:INVENT]-(a:Inventor) '
+                for iid in chunk:
+                    statement = ('MATCH (cites:patent)-[:CITES]->(p:patent)'
+                                 '<-[:INVENTS]-(a:inventor) '
                                  'WHERE a.inventor_id = $iid '
                                  'WITH DISTINCT cites '
                                  'RETURN cites.pid, cites.date '
                                  'ORDER BY cites.date ASC')
                     result = tx.run(statement, iid=iid).values()
-                    chain = []
-                    for patent in result:
-                        pid, date = patent
-                        date = datetime(date.year, date.month, date.day)
-                        chain.append((pid, to_epoch(date)))
-                    chains[iid] = chain
+                    chains[iid] = [(pid, to_epoch(_neodate2datetime(date)))
+                                   for pid, date in result]
                 tx.commit()
-                print('Finished working on {}/{}'.format(ix + 1, 200))
                 yield ix, chains
 
-    def query_pid2iid(self, pids):
-        """Get inventors associated with the patents of interest.
-
-        Parameters
-        ----------
-        pids : list
-            Patents of interest.
-
-        """
-
-        graph = GraphDatabase.driver('bolt://localhost:7687',
-                                     auth=(self._username, self._password))
-        pid_chunks = np.array_split(pids, 50)
-        with graph.session() as session:
-            for ix, pid_chunk in enumerate(pid_chunks):
-                tx = session.begin_transaction()
-                pairs_chunk = {}
-                for pid in pid_chunk:
-                    statement = ('MATCH (p:Patent)<-[:INVENT]-(i:Inventor) '
-                                 'WHERE p.pid = $pid '
-                                 'RETURN i.inventor_id')
-                    result = tx.run(statement, pid=pid).values()
-                    matched_inventors = np.array(result).flatten().tolist()
-                    if matched_inventors:
-                        pairs_chunk[pid] = matched_inventors
-                tx.commit()
-                print('{}/{}'.format(ix + 1, len(pid_chunks)))
-                yield pairs_chunk
-
-    def query_assignee_relationship(self, pids):
+    def query_connection_between_assignees(self, pids):
         """
 
         Parameters
@@ -1021,11 +972,12 @@ class Neo4jHandler(object):
         with graph.session() as session:
             tx = session.begin_transaction()
             for pid in pids:
-                statement = ('MATCH (A1:Assignee)-[:OWN]->(p1:Patent)'
-                             '<-[:CITE]-(p2:Patent)<-[:OWN]-(A2:Assignee) '
-                             'WHERE p2.pid = $pid AND p1.date >= date($s) '
-                             'RETURN A2.assignee_name, A1.assignee_name')
-                result = tx.run(statement, pid=pid, s='2015-01-01').values()
+                statement = ('MATCH (a1:assignee)-[:OWNS]->(p1:patent)'
+                             '<-[:CITES]-(p2:patent)<-[:OWNS]-(a2:assignee)'
+                             '-[:OWNS]->(p3:patent)'
+                             'WHERE p1.pid IN $pids AND p3.pid IN $pids '
+                             'RETURN a1.assignee_name, a2.assignee_name')
+                result = tx.run(statement, pids=list(pids)).values()
                 if result:
                     aca += result
             tx.commit()
