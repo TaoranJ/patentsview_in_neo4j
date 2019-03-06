@@ -35,7 +35,7 @@ def visualization_format(aca, opath, max_size=35, min_size=5):
                     'radius': int(math.log(citation_received[node] + 1, 2) /
                                   unit + min_size)
                 }}
-    json.dump(res, open(opath + 'aca.json', 'w'))
+    json.dump(res, open(opath + '.aca.json', 'w'))
 
 
 if __name__ == "__main__":
